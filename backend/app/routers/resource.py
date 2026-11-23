@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 from app.schemas import ActionPayload, ActionResult, EntryPayload, PageResult
 from app.services import service_for
 from app.services.data_flow import FlowEffect, FLOW_TRIGGERS, flow_engine
+from app.services.report_assembly import report_assembly
 
 router = APIRouter(prefix="/api", tags=["业务资源"])
 
@@ -74,6 +75,13 @@ def export_entries(
     )
 
 
+@router.get("/assembly/ledger")
+def get_assembly_ledger() -> dict[str, Any]:
+    """成稿清单：特征报告共用组装每次成稿的登记，审计结论随清单可查。"""
+    items = report_assembly.ledger()
+    return {"items": items, "total": len(items)}
+
+
 @router.get("/{module}/{entry_id}", response_model=dict)
 def get_entry(module: str, entry_id: int) -> dict[str, Any]:
     service = require_service(module)
@@ -105,6 +113,15 @@ def get_flow_trace(module: str, entry_id: int):
                                  "description": e.description, "timestamp": e.timestamp}
                                 for e in eff])
     return {"module": module, "entry_id": entry_id, "effects": effects}
+
+
+@router.get("/{module}/{entry_id}/assembly-status")
+def get_assembly_status(module: str, entry_id: int) -> dict[str, Any]:
+    """查询来源条目的成稿状态：处置是否已结束、续交资格、能否成稿。"""
+    service = require_service(module)
+    if service.get_entry(entry_id) is None:
+        raise HTTPException(status_code=404, detail=f"{service.ENTITY} {entry_id} 不存在或已归档")
+    return report_assembly.assembly_status(module, entry_id)
 
 
 @router.post("/{module}/{entry_id}/actions", response_model=ActionResult)

@@ -11,6 +11,7 @@ import random
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from app.services.report_assembly import report_assembly
 from app.store import store
 
 # ---------------------------------------------------------------------------
@@ -500,27 +501,38 @@ def flow_catalog_to_audit_to_report(feat_catalog_id: int) -> list[FlowEffect]:
         # 创建隐式审计记录
         audit_entry = {"id": 999, "检查结果": "通过"}
 
-    # 触发特征报告生成
-    _report_generate(catalog_name, index_no, effects)
+    # 触发特征报告生成（共用组装：治理审计提交已核实目录，审计结论落到成稿清单）
+    _report_generate(
+        catalog_name, index_no, effects,
+        catalog_id=feat_catalog_id,
+        conclusion=str(audit_entry.get("检查结果", "")),
+    )
 
     return effects
 
 
-def _report_generate(catalog_name: str, index_no: str, effects: list[FlowEffect]):
-    """生成特征报告。"""
-    report_rows = store.rows("report_task")
-    for rrow in report_rows:
-        if rrow.get("status") == "草稿":
-            rrow["status"] = "已生成"
-            rrow["pending"] = False
-            rrow["特征范围"] = catalog_name
-            rrow["最近生成"] = datetime.datetime.now().isoformat()
-            rrow["triggered_by"] = f"feat_catalog/{index_no}"
-            effects.append(FlowEffect(
-                "启动生成", "report_task", int(rrow.get("id", 0)),
-                f"审计 {catalog_name} 通过后生成特征报告 {rrow.get('报告编号','')}",
-            ))
-            break
+def _report_generate(
+    catalog_name: str,
+    index_no: str,
+    effects: list[FlowEffect],
+    *,
+    catalog_id: int,
+    conclusion: str,
+):
+    """生成特征报告：治理审计提交已核实目录，走特征报告数据共用组装。"""
+    result = report_assembly.finalize_report(
+        source_module="feat_catalog",
+        source_entry_id=catalog_id,
+        source_key=f"feat_catalog/{index_no}",
+        submitter="govern_audit",
+        materials={"审计对象": catalog_name},
+        conclusion=conclusion,
+    )
+    if result.report is not None:
+        effects.append(FlowEffect(
+            "启动生成", "report_task", int(result.report.get("id", 0)),
+            f"审计 {catalog_name} 通过后生成特征报告 {result.report.get('报告编号','')}",
+        ))
 
 
 # ============================ 链路9: 质量规则→特征监控→特征报告 ============================
@@ -553,21 +565,20 @@ def flow_quality_to_mon_to_report(quality_rule_id: int) -> list[FlowEffect]:
             ))
             break
 
-    # 生成异常报告
-    report_rows = store.rows("report_task")
-    for rrow in report_rows:
-        if rrow.get("status") == "草稿":
-            rrow["status"] = "已生成"
-            rrow["pending"] = False
-            rrow["报告类型"] = "质量异常报告"
-            rrow["特征范围"] = target_feat
-            rrow["最近生成"] = datetime.datetime.now().isoformat()
-            rrow["triggered_by"] = f"quality_rule/{rule_no}"
-            effects.append(FlowEffect(
-                "启动生成", "report_task", int(rrow.get("id", 0)),
-                f"质量规则 {rule_no} 阻断后生成异常报告 {rrow.get('报告编号','')}",
-            ))
-            break
+    # 生成异常报告（共用组装：质量规则交付阻断目标）
+    result = report_assembly.finalize_report(
+        source_module="quality_rule",
+        source_entry_id=quality_rule_id,
+        source_key=f"quality_rule/{rule_no}",
+        submitter="quality_rule",
+        materials={"阻断特征": target_feat},
+        report_type="质量异常报告",
+    )
+    if result.report is not None:
+        effects.append(FlowEffect(
+            "启动生成", "report_task", int(result.report.get("id", 0)),
+            f"质量规则 {rule_no} 阻断后生成异常报告 {result.report.get('报告编号','')}",
+        ))
 
     return effects
 
